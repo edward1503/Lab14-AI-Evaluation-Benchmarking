@@ -1,0 +1,67 @@
+{
+  "metadata": {
+    "version": "Agent_V2_Optimized",
+    "total": 60,
+    "timestamp": "2026-04-21 14:37:30"
+  },
+  "metrics": {
+    "avg_score": 4.515,
+    "pass_rate": 1.0,
+    "hit_rate": 0.967,
+    "mrr": 0.958,
+    "agreement_rate": 0.776,
+    "faithfulness": 0.974,
+    "relevancy": 0.568,
+    "avg_latency_sec": 0.034,
+    "avg_tokens": 165.1,
+    "total_cost_usd": 0.013869,
+    "avg_cost_usd": 0.000231
+  },
+  "case_breakdown": {
+    "factoid": {
+      "count": 12,
+      "pass_rate": 1.0,
+      "avg_score": 4.453
+    },
+    "paraphrase": {
+      "count": 12,
+      "pass_rate": 1.0,
+      "avg_score": 4.42
+    },
+    "scenario": {
+      "count": 12,
+      "pass_rate": 1.0,
+      "avg_score": 4.453
+    },
+    "adversarial": {
+      "count": 12,
+      "pass_rate": 1.0,
+      "avg_score": 4.817
+    },
+    "out_of_context": {
+      "count": 6,
+      "pass_rate": 1.0,
+      "avg_score": 4.567
+    },
+    "ambiguous": {
+      "count": 6,
+      "pass_rate": 1.0,
+      "avg_score": 4.298
+    }
+  },
+  "regression": {
+    "baseline_version": "Agent_V1_Base",
+    "candidate_version": "Agent_V2_Optimized",
+    "delta": {
+      "avg_score": 0.786,
+      "hit_rate": 0.167,
+      "pass_rate": 0.4,
+      "avg_cost_usd": -0.000105,
+      "avg_latency_sec": -0.0336
+    },
+    "decision": "APPROVE",
+    "reasons": [
+      "V2 cải thiện chất lượng mà không gây regression đáng kể."
+    ]
+  }
+}
