@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "total": 73,
+    "version": "REGRESSION_RUN",
+    "timestamp": "2026-04-21 16:47:38",
+    "versions_compared": [
+      "V1",
+      "V2"
+    ]
+  },
+  "metrics": {
+    "avg_score": 4.054794520547945,
+    "hit_rate": 0.8904109589041096,
+    "agreement_rate": 0.9082191780821918
+  },
+  "regression": {
+    "v1": {
+      "score": 3.9863013698630136,
+      "hit_rate": 0.8904109589041096,
+      "judge_agreement": 0.8589041095890412
+    },
+    "v2": {
+      "score": 4.054794520547945,
+      "hit_rate": 0.8904109589041096,
+      "judge_agreement": 0.9082191780821918
+    },
+    "decision": "APPROVE"
+  }
+}
