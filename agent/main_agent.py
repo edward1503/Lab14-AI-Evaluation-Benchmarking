@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
+import pickle
 import re
+import threading
 import time
+import unicodedata
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-
-from agent.ingestion import InMemoryIndex, build_or_load_index
 
 
 load_dotenv()
@@ -33,6 +37,349 @@ STRICT_SYSTEM_PROMPT_V2 = (
 )
 NOT_FOUND = "Không tìm thấy trong tài liệu."
 RRF_K = 60
+REPO_ROOT = Path(__file__).resolve().parent.parent
+EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIM = 1536
+CHUNK_SIZE = 600
+CHUNK_OVERLAP = 50
+
+STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "bao",
+    "bi",
+    "cac",
+    "cach",
+    "cho",
+    "co",
+    "cua",
+    "duoc",
+    "gi",
+    "hay",
+    "hien",
+    "hoi",
+    "hom",
+    "la",
+    "lam",
+    "luc",
+    "mot",
+    "nao",
+    "nay",
+    "neu",
+    "nhieu",
+    "nhung",
+    "the",
+    "thi",
+    "trong",
+    "va",
+    "ve",
+    "voi",
+}
+
+SEED_DOCUMENTS = {
+    "password_reset.txt": """# Chính sách đổi mật khẩu
+
+Khách hàng có thể đổi mật khẩu trong trang Tài khoản bằng cách chọn mục Bảo mật,
+sau đó bấm Đổi mật khẩu. Hệ thống sẽ gửi mã xác minh qua email hoặc số điện
+thoại đã đăng ký.
+""",
+    "refunds.txt": """# Chính sách hoàn tiền
+
+Khách hàng có thể yêu cầu hoàn tiền trong vòng 14 ngày kể từ ngày thanh toán nếu
+dịch vụ chưa được sử dụng quá mức hoặc có lỗi kỹ thuật được xác nhận. Thời gian
+xử lý hoàn tiền thường là 5 đến 7 ngày làm việc sau khi yêu cầu được phê duyệt.
+""",
+    "support_contact.txt": """# Liên hệ bộ phận hỗ trợ
+
+Khách hàng có thể liên hệ bộ phận hỗ trợ qua email support@example.com, trò
+chuyện trực tuyến trong ứng dụng, hoặc tổng đài 1900-0000 từ 8:00 đến 18:00.
+""",
+}
+
+
+class InMemoryIndex:
+    """Chỉ mục runtime đọc artifact từ ingest.py và tìm kiếm bằng cosine."""
+
+    def __init__(
+        self,
+        chunks: list[dict[str, Any]],
+        embeddings: np.ndarray,
+        client: Optional[AsyncOpenAI] = None,
+        mock_mode: Optional[bool] = None,
+    ) -> None:
+        self.chunks = chunks
+        self.embeddings = _normalize_matrix(embeddings.astype(np.float32, copy=False))
+        self.client = client
+        self.mock_mode = (
+            mock_mode if mock_mode is not None else not bool(os.getenv("OPENAI_API_KEY"))
+        )
+        self._row_by_chunk_id = {
+            str(chunk["chunk_id"]): index for index, chunk in enumerate(self.chunks)
+        }
+
+    def set_client(self, client: Optional[AsyncOpenAI]) -> None:
+        """Gắn AsyncOpenAI client cho truy vấn embedding sau khi nạp index."""
+        self.client = client
+        self.mock_mode = client is None
+
+    async def embed_text(self, text: str) -> np.ndarray:
+        """Tạo embedding đã chuẩn hóa cho một chuỗi truy vấn."""
+        if self.mock_mode or self.client is None:
+            return _mock_embedding(text)
+        embeddings = await _embed_openai([text], self.client)
+        return embeddings[0]
+
+    async def search(self, query: str, top_k: int) -> list[dict[str, Any]]:
+        """Tìm chunk gần nhất với truy vấn."""
+        query_embedding = await self.embed_text(query)
+        return await self.search_by_embedding(query_embedding, top_k)
+
+    async def search_by_embedding(self, emb: np.ndarray, top_k: int) -> list[dict[str, Any]]:
+        """Tìm chunk gần nhất từ embedding có sẵn."""
+        if not self.chunks or self.embeddings.size == 0:
+            return []
+        query_vector = _normalize_vector(np.asarray(emb, dtype=np.float32))
+        scores = np.dot(self.embeddings.astype(np.float64), query_vector.astype(np.float64))
+        limit = min(max(top_k, 0), len(self.chunks))
+        if limit == 0:
+            return []
+        top_indices = np.argsort(scores)[::-1][:limit]
+        return [self._format_result(int(index), float(scores[index])) for index in top_indices]
+
+    def embedding_for_chunk(self, chunk_id: str) -> Optional[np.ndarray]:
+        """Trả về embedding của chunk theo mã định danh."""
+        row = self._row_by_chunk_id.get(chunk_id)
+        if row is None:
+            return None
+        return self.embeddings[row]
+
+    def _format_result(self, index: int, score: float) -> dict[str, Any]:
+        chunk = self.chunks[index]
+        return {
+            "chunk_id": chunk["chunk_id"],
+            "text": chunk["text"],
+            "score": score,
+            "source": chunk["source"],
+        }
+
+
+def build_or_load_index(
+    chunks_path: str = "data/chunks.json",
+    doc_dir: str = "data/doc",
+    index_path: str = "data/index.pkl",
+) -> InMemoryIndex:
+    """Nạp index ưu tiên artifact data/chunks.json từ ingest.py."""
+    chunks_file = _repo_path(chunks_path)
+    docs_path = _repo_path(doc_dir)
+    cache_path = _repo_path(index_path)
+    mock_mode = not bool(os.getenv("OPENAI_API_KEY"))
+    chunks = _load_ingested_chunks(chunks_file)
+    if not chunks:
+        chunks = _build_chunks_from_docs(docs_path)
+
+    signature = _chunk_signature(chunks)
+    if cache_path.exists():
+        with cache_path.open("rb") as file_obj:
+            payload = pickle.load(file_obj)
+        if payload.get("signature") == signature:
+            logging.info("Loaded RAG index from %s", cache_path)
+            return InMemoryIndex(
+                chunks=payload["chunks"],
+                embeddings=np.asarray(payload["embeddings"], dtype=np.float32),
+                mock_mode=mock_mode,
+            )
+
+    texts = [chunk["text"] for chunk in chunks]
+    if mock_mode:
+        embeddings = np.vstack([_mock_embedding(text) for text in texts])
+    else:
+        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=30.0)
+        embeddings = _run_async_blocking(_embed_openai(texts, client))
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with cache_path.open("wb") as file_obj:
+        pickle.dump(
+            {"chunks": chunks, "embeddings": embeddings, "signature": signature},
+            file_obj,
+        )
+    logging.info("Built RAG index with %s chunks", len(chunks))
+    return InMemoryIndex(chunks=chunks, embeddings=embeddings, mock_mode=mock_mode)
+
+
+def _load_ingested_chunks(chunks_file: Path) -> list[dict[str, Any]]:
+    if not chunks_file.exists():
+        return []
+    raw_chunks = json.loads(chunks_file.read_text(encoding="utf-8"))
+    chunks: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_chunks):
+        metadata = item.get("metadata", {})
+        source_path = str(metadata.get("source", f"chunk_{index}")).replace("\\", "/")
+        source_name = Path(source_path).name
+        source_stem = Path(source_path).stem or "doc"
+        local_id = str(metadata.get("chunk_id") or item.get("id") or f"chunk_{index}")
+        chunk_index = _parse_chunk_index(local_id, index)
+        chunk_id = f"{source_stem}::chunk_{chunk_index}"
+        chunks.append(
+            {
+                "chunk_id": chunk_id,
+                "text": str(item.get("text", "")),
+                "source": source_name,
+            }
+        )
+    logging.info("Loaded %s chunks from %s", len(chunks), chunks_file)
+    return [chunk for chunk in chunks if chunk["text"].strip()]
+
+
+def _build_chunks_from_docs(doc_dir: Path) -> list[dict[str, Any]]:
+    _seed_docs_if_needed(doc_dir)
+    chunks: list[dict[str, Any]] = []
+    documents = sorted(path for path in doc_dir.iterdir() if path.suffix.lower() == ".txt")
+    for path in documents:
+        text = path.read_text(encoding="utf-8")
+        for index, chunk_text in enumerate(_chunk_text(text)):
+            chunks.append(
+                {
+                    "chunk_id": f"{path.stem}::chunk_{index}",
+                    "text": chunk_text,
+                    "source": path.name,
+                }
+            )
+    if not chunks:
+        raise ValueError(f"No supported documents found in {doc_dir}")
+    return chunks
+
+
+def _seed_docs_if_needed(doc_dir: Path) -> None:
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    if any(path.is_file() and path.suffix.lower() == ".txt" for path in doc_dir.iterdir()):
+        return
+    for filename, content in SEED_DOCUMENTS.items():
+        (doc_dir / filename).write_text(content, encoding="utf-8")
+    logging.info("Seeded Vietnamese support docs in %s", doc_dir)
+
+
+def _chunk_text(text: str) -> list[str]:
+    clean_text = re.sub(r"[ \t]+", " ", text).strip()
+    if not clean_text:
+        return []
+    chunks: list[str] = []
+    start = 0
+    while start < len(clean_text):
+        end = min(start + CHUNK_SIZE, len(clean_text))
+        if end < len(clean_text):
+            end = _preferred_boundary(clean_text, start, end)
+        chunk = clean_text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(clean_text):
+            break
+        start = max(end - CHUNK_OVERLAP, start + 1)
+    return chunks
+
+
+def _preferred_boundary(text: str, start: int, end: int) -> int:
+    window = text[start:end]
+    minimum = int(len(window) * 0.45)
+    for pattern in ["\n\n", ". ", "! ", "? ", "\n", "; "]:
+        position = window.rfind(pattern)
+        if position >= minimum:
+            return start + position + len(pattern)
+    return end
+
+
+async def _embed_openai(texts: list[str], client: AsyncOpenAI) -> np.ndarray:
+    vectors: list[list[float]] = []
+    batch_size = 64
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        response = await _retry_async(
+            lambda batch=batch: client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=batch,
+            )
+        )
+        vectors.extend([item.embedding for item in response.data])
+    return _normalize_matrix(np.asarray(vectors, dtype=np.float32))
+
+
+def _mock_embedding(text: str) -> np.ndarray:
+    vector = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+    tokens = _tokenize(text)
+    features = tokens + [f"{tokens[i]}_{tokens[i + 1]}" for i in range(len(tokens) - 1)]
+    for feature in features:
+        digest = hashlib.sha256(feature.encode("utf-8")).digest()
+        index = int.from_bytes(digest[:4], "big") % EMBEDDING_DIM
+        sign = 1.0 if digest[4] % 2 == 0 else -1.0
+        vector[index] += sign
+    return _normalize_vector(vector)
+
+
+def _chunk_signature(chunks: list[dict[str, Any]]) -> str:
+    payload = json.dumps(chunks, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _parse_chunk_index(chunk_id: str, fallback: int) -> int:
+    match = re.search(r"chunk_(\d+)$", chunk_id)
+    if not match:
+        return fallback
+    return int(match.group(1))
+
+
+def _repo_path(path_value: str) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        raise ValueError("Absolute paths are not supported")
+    return REPO_ROOT / path
+
+
+def _normalize_vector(vector: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(vector))
+    if norm == 0.0:
+        return vector.astype(np.float32, copy=False)
+    return (vector / norm).astype(np.float32, copy=False)
+
+
+def _normalize_matrix(matrix: np.ndarray) -> np.ndarray:
+    if matrix.size == 0:
+        return matrix.astype(np.float32, copy=False)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms == 0.0] = 1.0
+    return (matrix / norms).astype(np.float32, copy=False)
+
+
+def _tokenize(text: str) -> list[str]:
+    normalized = _strip_accents(text.lower())
+    raw_tokens = re.findall(r"[a-z0-9]+", normalized)
+    return [token for token in raw_tokens if len(token) > 1 and token not in STOPWORDS]
+
+
+def _strip_accents(text: str) -> str:
+    decomposed = unicodedata.normalize("NFD", text)
+    return "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
+
+
+def _run_async_blocking(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except Exception as exc:  # pragma: no cover - phụ thuộc vòng lặp gọi ngoài.
+            result["error"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
 
 
 class MainAgent:
