@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Tuple, Optional
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+import openai
 from google import genai
 
 load_dotenv()
@@ -110,62 +111,87 @@ class LLMJudge:
     #  PRIVATE: Gọi từng Judge
     # ════════════════════════════════════════════════════════════════
 
-    async def _call_openai_judge(self, user_prompt: str) -> Tuple[Dict, Dict]:
-        """Gọi OpenAI API, trả về (parsed_result, usage_info)."""
-        try:
-            response = await self.openai_client.chat.completions.create(
-                model=self.openai_model,
-                messages=[
-                    {"role": "system", "content": EVAL_SYSTEM_PROMPT},
-                    {"role": "user",   "content": user_prompt},
-                ],
-                temperature=0.0,
-                response_format={"type": "json_object"},
-            )
-            text = response.choices[0].message.content
-            usage = {
-                "model": self.openai_model,
-                "input_tokens":  response.usage.prompt_tokens,
-                "output_tokens": response.usage.completion_tokens,
-            }
-            self.total_tokens["openai_input"]  += usage["input_tokens"]
-            self.total_tokens["openai_output"] += usage["output_tokens"]
-            return self._parse_json(text), usage
+    async def _call_openai_judge(self, user_prompt: str, max_retries: int = 3) -> Tuple[Dict, Dict]:
+        """Gọi OpenAI API, trả về (parsed_result, usage_info). Có cơ chế Retry."""
+        for attempt in range(max_retries):
+            try:
+                response = await self.openai_client.chat.completions.create(
+                    model=self.openai_model,
+                    messages=[
+                        {"role": "system", "content": EVAL_SYSTEM_PROMPT},
+                        {"role": "user",   "content": user_prompt},
+                    ],
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                )
+                text = response.choices[0].message.content
+                usage = {
+                    "model": self.openai_model,
+                    "input_tokens":  response.usage.prompt_tokens,
+                    "output_tokens": response.usage.completion_tokens,
+                }
+                self.total_tokens["openai_input"]  += usage["input_tokens"]
+                self.total_tokens["openai_output"] += usage["output_tokens"]
+                return self._parse_json(text), usage
 
-        except Exception as e:
-            print(f"  ⚠️ OpenAI Judge error: {e}")
-            return {"score": None, "reasoning": f"API error: {e}"}, {
-                "model": self.openai_model, "input_tokens": 0, "output_tokens": 0,
-            }
+            except openai.AuthenticationError as e:
+                print(f"❌ LỖI NGHIÊM TRỌNG: Sai OpenAI API Key. Dừng Benchmark.")
+                raise SystemExit(1)
+            except openai.RateLimitError as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    print(f"  ⚠️ Quá tải OpenAI API (429). Chờ {wait_time}s rồi thử lại...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"  ❌ OpenAI Judge error: Hết lượt retry cho Rate Limit.")
+                    return {"score": None, "reasoning": f"Rate limit failed after {max_retries} retries"}, {
+                        "model": self.openai_model, "input_tokens": 0, "output_tokens": 0,
+                    }
+            except Exception as e:
+                print(f"  ⚠️ OpenAI Judge error: {e}")
+                return {"score": None, "reasoning": f"API error: {e}"}, {
+                    "model": self.openai_model, "input_tokens": 0, "output_tokens": 0,
+                }
 
-    async def _call_gemini_judge(self, user_prompt: str) -> Tuple[Dict, Dict]:
-        """Gọi Gemini API (google-genai SDK), trả về (parsed_result, usage_info)."""
+    async def _call_gemini_judge(self, user_prompt: str, max_retries: int = 3) -> Tuple[Dict, Dict]:
+        """Gọi Gemini API (google-genai SDK), trả về (parsed_result, usage_info). Có cơ chế Retry."""
         full_prompt = EVAL_SYSTEM_PROMPT + "\n\n" + user_prompt
-        try:
-            response = await self.gemini_client.aio.models.generate_content(
-                model=self.gemini_model_name,
-                contents=full_prompt,
-                config={
-                    "temperature": 0.0,
-                    "response_mime_type": "application/json",
-                },
-            )
-            text = response.text
-            um = response.usage_metadata
-            usage = {
-                "model": self.gemini_model_name,
-                "input_tokens":  getattr(um, "prompt_token_count", 0),
-                "output_tokens": getattr(um, "candidates_token_count", 0),
-            }
-            self.total_tokens["gemini_input"]  += usage["input_tokens"]
-            self.total_tokens["gemini_output"] += usage["output_tokens"]
-            return self._parse_json(text), usage
+        for attempt in range(max_retries):
+            try:
+                response = await self.gemini_client.aio.models.generate_content(
+                    model=self.gemini_model_name,
+                    contents=full_prompt,
+                    config={
+                        "temperature": 0.0,
+                        "response_mime_type": "application/json",
+                    },
+                )
+                text = response.text
+                um = response.usage_metadata
+                usage = {
+                    "model": self.gemini_model_name,
+                    "input_tokens":  getattr(um, "prompt_token_count", 0),
+                    "output_tokens": getattr(um, "candidates_token_count", 0),
+                }
+                self.total_tokens["gemini_input"]  += usage["input_tokens"]
+                self.total_tokens["gemini_output"] += usage["output_tokens"]
+                return self._parse_json(text), usage
 
-        except Exception as e:
-            print(f"  ⚠️ Gemini Judge error: {e}")
-            return {"score": None, "reasoning": f"API error: {e}"}, {
-                "model": self.gemini_model_name, "input_tokens": 0, "output_tokens": 0,
-            }
+            except Exception as e:
+                err_msg = str(e)
+                if "401" in err_msg or "403" in err_msg or "API_KEY_INVALID" in err_msg:
+                    print(f"❌ LỖI NGHIÊM TRỌNG: Sai Gemini API Key. Dừng Benchmark.")
+                    raise SystemExit(1)
+                elif "429" in err_msg or "503" in err_msg or "quota" in err_msg.lower():
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        print(f"  ⚠️ Quá tải Gemini API. Chờ {wait_time}s rồi thử lại...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                print(f"  ⚠️ Gemini Judge error: {e}")
+                return {"score": None, "reasoning": f"API error: {e}"}, {
+                    "model": self.gemini_model_name, "input_tokens": 0, "output_tokens": 0,
+                }
 
     # ════════════════════════════════════════════════════════════════
     #  PUBLIC: Multi-Judge Evaluation
@@ -193,22 +219,36 @@ class LLMJudge:
         score_openai = self._safe_score(res_openai)
         score_gemini = self._safe_score(res_gemini)
 
-        # ── Agreement Rate (liên tục, không binary) ──
-        diff = abs(score_openai - score_gemini)
-        agreement_rate = round(1.0 - diff / 4.0, 2)
-
-        # ── Conflict resolution ──
-        if diff > 1:
-            final_score = await self._resolve_conflict(
-                prompt, score_openai, score_gemini,
-            )
-            resolution = "tiebreaker_median"
+        # ── Handle None scores ──
+        if score_openai is None and score_gemini is None:
+            final_score = None
+            agreement_rate = None
+            resolution = "failed_both"
+        elif score_openai is None:
+            final_score = score_gemini
+            agreement_rate = None
+            resolution = "fallback_gemini"
+        elif score_gemini is None:
+            final_score = score_openai
+            agreement_rate = None
+            resolution = "fallback_openai"
         else:
-            final_score = (score_openai + score_gemini) / 2
-            resolution = "average"
+            # ── Agreement Rate (liên tục, không binary) ──
+            diff = abs(score_openai - score_gemini)
+            agreement_rate = round(1.0 - diff / 4.0, 2)
+    
+            # ── Conflict resolution ──
+            if diff > 1:
+                final_score = await self._resolve_conflict(
+                    prompt, score_openai, score_gemini,
+                )
+                resolution = "tiebreaker_median"
+            else:
+                final_score = (score_openai + score_gemini) / 2
+                resolution = "average"
 
         return {
-            "final_score":     round(final_score, 2),
+            "final_score":     round(final_score, 2) if final_score is not None else None,
             "agreement_rate":  agreement_rate,
             "resolution":      resolution,
             "individual_scores": {
@@ -250,6 +290,8 @@ class LLMJudge:
                 original_prompt + tiebreaker_extra
             )
             score_c = self._safe_score(result)
+            if score_c is None:
+                return (score_a + score_b) / 2
             median = sorted([score_a, score_b, score_c])[1]
             return float(median)
         except Exception:
@@ -346,11 +388,11 @@ class LLMJudge:
         return {"score": None, "reasoning": f"[PARSE FAILED] {text[:200]}"}
 
     @staticmethod
-    def _safe_score(result: Dict) -> int:
-        """Lấy score an toàn, clamp 1-5, default 3."""
+    def _safe_score(result: Dict) -> Optional[int]:
+        """Lấy score an toàn, clamp 1-5, trả về None nếu lỗi."""
         raw = result.get("score")
         if raw is None:
-            return 3
+            return None
         return max(1, min(5, int(raw)))
 
     @staticmethod

@@ -26,13 +26,21 @@ class BenchmarkRunner:
             test_case["expected_answer"]
         )
         
+        # 4. Gán status báo cáo:
+        # - "error": Lỗi hệ thống/API làm Judge trả về None
+        # - "fail": Chạy thành công nhưng agent điểm thấp (<3)
+        # - "pass": Chạy thành công và agent đạt điểm tốt (>=3)
+        status = "error"
+        if judge_result.get("final_score") is not None:
+            status = "fail" if judge_result["final_score"] < 3 else "pass"
+            
         return {
             "test_case": test_case["question"],
             "agent_response": response["answer"],
             "latency": latency,
             "ragas": ragas_scores,
             "judge": judge_result,
-            "status": "fail" if judge_result["final_score"] < 3 else "pass"
+            "status": status
         }
 
     async def run_all(self, dataset: List[Dict], batch_size: int = 5) -> List[Dict]:

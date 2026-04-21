@@ -41,12 +41,21 @@ async def run_benchmark_with_results(agent_version: str):
     results = await runner.run_all(dataset)
 
     total = len(results)
+    
+    # Lọc các test case bị lỗi API (điểm None) để tính trung bình chính xác, không bị crash
+    valid_scores = [r["judge"]["final_score"] for r in results if r["judge"].get("final_score") is not None]
+    valid_agreements = [r["judge"]["agreement_rate"] for r in results if r["judge"].get("agreement_rate") is not None]
+    
+    # Tính trung bình trên tập dữ liệu hợp lệ (thành công)
+    avg_score = sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
+    avg_agreement = sum(valid_agreements) / len(valid_agreements) if valid_agreements else 0.0
+
     summary = {
         "metadata": {"version": agent_version, "total": total, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")},
         "metrics": {
-            "avg_score": sum(r["judge"]["final_score"] for r in results) / total,
-            "hit_rate": sum(r["ragas"]["retrieval"]["hit_rate"] for r in results) / total,
-            "agreement_rate": sum(r["judge"]["agreement_rate"] for r in results) / total
+            "avg_score": avg_score,
+            "hit_rate": sum(r["ragas"]["retrieval"]["hit_rate"] for r in results) / total if total > 0 else 0.0,
+            "agreement_rate": avg_agreement
         }
     }
     return results, summary
