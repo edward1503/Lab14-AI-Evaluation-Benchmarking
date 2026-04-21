@@ -12,6 +12,7 @@ class MainAgent:
     RAG Agent thực tế kết nối với ChromaDB để phục vụ benchmarking.
     """
     def __init__(self, model_name: str = "gpt-4o-mini"):
+        self.model_name = model_name
         self.name = f"SupportAgent-{model_name}"
         # Cấu hình Embeddings (phải khớp với ingest.py)
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
@@ -60,13 +61,21 @@ Câu hỏi: {question}
         # Gọi LLM (sử dụng ainvoke cho async)
         response = await self.llm.ainvoke(full_prompt)
         
+        # Trích xuất Token Usage từ LangChain metadata
+        usage = response.response_metadata.get("token_usage", {})
+        
         return {
             "answer": response.content,
             "contexts": contexts,
             "retrieved_ids": retrieved_ids,
             "metadata": {
-                "model": self.llm.model_name,
-                "sources": sources
+                "model": self.model_name,
+                "sources": sources,
+                "usage": {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0)
+                }
             }
         }
 
@@ -86,6 +95,6 @@ if __name__ == "__main__":
             print(f"\n--- Q: {q} ---")
             resp = await agent.query(q)
             print(f"A: {resp['answer']}")
-            print(f"Retrieved Chunks: {resp['retrieved_ids']}")
+            print(f"Usage: {resp['metadata']['usage']}")
 
     asyncio.run(test())

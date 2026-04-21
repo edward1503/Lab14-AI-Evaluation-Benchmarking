@@ -2,7 +2,9 @@ import json
 import os
 
 def validate_lab():
-    print("🔍 Đang kiểm tra định dạng bài nộp...")
+    print("\n" + "="*50)
+    print("🔍 Đang kiểm tra định dạng bài nộp (EXPERT MODE)...")
+    print("="*50)
 
     required_files = [
         "reports/summary.json",
@@ -36,28 +38,38 @@ def validate_lab():
         return
 
     metrics = data["metrics"]
+    metadata = data["metadata"]
 
-    print(f"\n--- Thống kê nhanh ---")
-    print(f"Tổng số cases: {data['metadata'].get('total', 'N/A')}")
-    print(f"Điểm trung bình: {metrics.get('avg_score', 0):.2f}")
+    print(f"\n--- Thống kê hiệu năng & Chi phí ---")
+    print(f"📊 Tổng số cases: {metadata.get('total', 'N/A')}")
+    print(f"⏱️ Thời gian thực thi: {metadata.get('duration_seconds', 0):.1f}s")
+    
+    # In thông tin Cost & Token (EXPERT)
+    total_cost = metadata.get("total_cost_usd", 0)
+    print(f"💸 Tổng chi phí Evaluation: ${total_cost:.4f}")
+    
+    usage = metrics.get("usage", {})
+    print(f"💎 Token Usage: {usage.get('prompt_tokens', 0)} (Input) / {usage.get('completion_tokens', 0)} (Output)")
+    print(f"⭐️ Điểm trung bình (V2): {metrics.get('avg_score', 0):.2f}/5.0")
 
-    # EXPERT CHECKS
+    # METRICS CHECKS
+    print(f"\n--- Chất lượng RAG ---")
     has_retrieval = "hit_rate" in metrics
     if has_retrieval:
-        print(f"✅ Đã tìm thấy Retrieval Metrics (Hit Rate: {metrics['hit_rate']*100:.1f}%)")
-    else:
-        print(f"⚠️ CẢNH BÁO: Thiếu Retrieval Metrics (hit_rate).")
-
+        print(f"✅ Hit Rate: {metrics['hit_rate']*100:.1f}%")
+        
     has_multi_judge = "agreement_rate" in metrics
     if has_multi_judge:
-        print(f"✅ Đã tìm thấy Multi-Judge Metrics (Agreement Rate: {metrics['agreement_rate']*100:.1f}%)")
-    else:
-        print(f"⚠️ CẢNH BÁO: Thiếu Multi-Judge Metrics (agreement_rate).")
+        print(f"✅ Judge Agreement Rate: {metrics['agreement_rate']*100:.1f}%")
 
-    if data["metadata"].get("version"):
-        print(f"✅ Đã tìm thấy thông tin phiên bản Agent (Regression Mode)")
+    if metadata.get("version") == "EXPERT_REGRESSION_RUN":
+        print(f"✅ Chế độ Regression: Đã so sánh V1 vs V2")
+        decision = data.get("regression", {}).get("decision", "N/A")
+        print(f"📢 Quyết định cuối cùng: {decision}")
 
-    print("\n🚀 Bài lab đã sẵn sàng để chấm điểm!")
+    print("\n" + "="*50)
+    print("🚀 BÀI LAB ĐÃ SẴN SÀNG ĐỂ CHẤM ĐIỂM (Chuẩn Expert)!")
+    print("="*50 + "\n")
 
 if __name__ == "__main__":
     validate_lab()

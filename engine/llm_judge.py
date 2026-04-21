@@ -49,9 +49,20 @@ Chỉ trả về JSON:
                 response_format={"type": "json_object"},
                 temperature=0.2
             )
-            return json.loads(response.choices[0].message.content)
+            # Lấy data và gán thêm usage thông tin
+            data = json.loads(response.choices[0].message.content)
+            data["usage"] = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens
+            }
+            return data
         except Exception as e:
-            return {"accuracy": 1, "faithfulness": 1, "relevancy": 1, "reasoning": f"Error {model}: {str(e)}"}
+            return {
+                "accuracy": 1, "faithfulness": 1, "relevancy": 1, 
+                "reasoning": f"Error {model}: {str(e)}",
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            }
 
     async def evaluate_multi_judge(self, question: str, answer: str, ground_truth: str, context: str = "") -> Dict[str, Any]:
         tasks = [self._get_single_score(model, question, answer, ground_truth, context) for model in self.models]
@@ -72,6 +83,13 @@ Chỉ trả về JSON:
         # Trích xuất lý do tổng hợp
         combined_reasoning = " | ".join([f"{m}: {r.get('reasoning')}" for m, r in individual_results.items()])
 
+        # Tổng hợp Usage cho Judge
+        total_usage = {
+            "prompt_tokens": sum(r["usage"]["prompt_tokens"] for r in results),
+            "completion_tokens": sum(r["usage"]["completion_tokens"] for r in results),
+            "total_tokens": sum(r["usage"]["total_tokens"] for r in results)
+        }
+
         return {
             "final_score": avg_acc,
             "agreement_rate": agreement,
@@ -79,7 +97,8 @@ Chỉ trả về JSON:
             "relevancy_avg": sum(r.get("relevancy", 1) for r in results) / len(results),
             "individual_results": individual_results,
             "status": status,
-            "reasoning": combined_reasoning
+            "reasoning": combined_reasoning,
+            "usage": total_usage
         }
 
 if __name__ == "__main__":

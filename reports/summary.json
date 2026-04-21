@@ -1,28 +1,40 @@
 {
   "metadata": {
     "total": 73,
-    "version": "REGRESSION_RUN",
-    "timestamp": "2026-04-21 16:47:38",
-    "versions_compared": [
-      "V1",
-      "V2"
-    ]
+    "version": "EXPERT_REGRESSION_RUN",
+    "timestamp": "2026-04-21 17:50:12",
+    "duration_seconds": 147.85179290000087,
+    "total_cost_usd": 0.17475410000000002
   },
   "metrics": {
-    "avg_score": 4.054794520547945,
+    "avg_score": 4.068493150684931,
     "hit_rate": 0.8904109589041096,
-    "agreement_rate": 0.9082191780821918
+    "agreement_rate": 0.9054794520547944,
+    "total_cost_usd": 0.0722065,
+    "usage": {
+      "prompt_tokens": 171608,
+      "completion_tokens": 20339,
+      "total_tokens": 191947
+    }
   },
   "regression": {
     "v1": {
-      "score": 3.9863013698630136,
-      "hit_rate": 0.8904109589041096,
-      "judge_agreement": 0.8589041095890412
+      "score": 4.054794520547945,
+      "cost": 0.1025476,
+      "usage": {
+        "prompt_tokens": 190017,
+        "completion_tokens": 22176,
+        "total_tokens": 212193
+      }
     },
     "v2": {
-      "score": 4.054794520547945,
-      "hit_rate": 0.8904109589041096,
-      "judge_agreement": 0.9082191780821918
+      "score": 4.068493150684931,
+      "cost": 0.0722065,
+      "usage": {
+        "prompt_tokens": 171608,
+        "completion_tokens": 20339,
+        "total_tokens": 191947
+      }
     },
     "decision": "APPROVE"
   }
