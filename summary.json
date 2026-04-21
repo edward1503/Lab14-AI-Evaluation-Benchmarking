@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "total": 10,
+    "version": "BASELINE (V1)",
+    "timestamp": "2026-04-20 23:58:38",
+    "versions_compared": [
+      "V1",
+      "V2"
+    ]
+  },
+  "metrics": {
+    "avg_score": 0.7,
+    "hit_rate": 0.0,
+    "agreement_rate": 0.4533333333333333
+  },
+  "regression": {
+    "v1": {
+      "score": 0.7,
+      "hit_rate": 0.0,
+      "judge_agreement": 0.4533333333333333
+    },
+    "v2": {
+      "score": 0.5,
+      "hit_rate": 0.0,
+      "judge_agreement": 0.5333333333333333
+    },
+    "decision": "BLOCK"
+  }
+}
