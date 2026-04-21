@@ -461,27 +461,33 @@ class LLMJudge:
         return round(kappa, 3)
 
     @staticmethod
-    def export_spot_check_report(verify_results: Dict, output_path: str = "reports/spot_check.md"):
+    def export_spot_check_report(verify_results: Dict, kappa: float, output_path: str = "reports/spot_check.md"):
         """
         Xuất file báo cáo các case bị flag để con người verify (Bước 9).
         """
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        kappa_label = LLMJudge._kappa_interpretation(kappa)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write("# 🔍 Báo cáo Spot Check (Bước 9: Verify Judge)\n\n")
-            f.write(f"**Trạng thái:** {verify_results['recommendation']}\n")
-            f.write(f"- Tổng số case: {verify_results['summary']['total']}\n")
-            f.write(f"- Số case bị Flag: {verify_results['summary']['flagged_count']}\n")
-            f.write(f"- Tỉ lệ: {verify_results['summary']['flagged_rate']}%\n\n")
+            f.write(f"## 📊 Thống kê độ tin cậy (Reliability Analysis)\n")
+            f.write(f"- **Cohen's Kappa:** `{kappa}` ({kappa_label})\n")
+            f.write(f"- **Agreement Rate trung bình:** {verify_results['summary'].get('avg_agreement', 'N/A')}\n")
+            f.write(f"- **Trạng thái hệ thống:** {verify_results['recommendation']}\n\n")
             
-            f.write("## 📌 Danh sách các case cần kiểm tra lại bằng tay\n\n")
-            f.write("| ID | Câu hỏi | Score | Flags | Link |\n")
+            f.write(f"## 🛠️ Kết quả tổng quan\n")
+            f.write(f"- Tổng số case đã eval: {verify_results['summary']['total']}\n")
+            f.write(f"- Số case cần Manual Review: **{verify_results['summary']['flagged_count']}**\n")
+            f.write(f"- Tỉ lệ cần check: {verify_results['summary']['flagged_rate']}%\n\n")
+            
+            f.write("## 📌 Danh sách các case bị Flag (Cần Verify bằng tay)\n\n")
+            f.write("| ID | Câu hỏi | Score | Nguyên nhân Flag | Link |\n")
             f.write("|---|---|---|---|---|\n")
             for fc in verify_results['flagged_cases']:
                 flags = ", ".join(fc['flags'])
-                f.write(f"| {fc['case_index']} | {fc['question']} | {fc['final_score']} | {flags} | [Verify] |\n")
+                f.write(f"| {fc['case_index']} | {fc['question']} | {fc['final_score']} | {flags} | [Mở Case] |\n")
             
-            f.write("\n\n---\n*Báo cáo được tạo tự động bởi LLM Judge Engine*")
-        print(f"✅ Đã xuất báo cáo spot check ra: {output_path}")
+            f.write("\n\n---\n*Báo cáo được tạo bởi AI Evaluation Factory - Lab 14*")
+        print(f"✅ Báo cáo Spot Check đã sẵn sàng tại: {output_path}")
 
     @staticmethod
     def _kappa_interpretation(kappa: float) -> str:
@@ -557,7 +563,20 @@ if __name__ == "__main__":
         print(f"   Recommendation: {verify['recommendation']}")
         
         # Xuất báo cáo Markdown cho Step 9
-        LLMJudge.export_spot_check_report(verify)
+        LLMJudge.export_spot_check_report(verify, kappa)
+        print()
+
+        # ── Advanced: Position Bias Check (Bonus) ──
+        print("⚖️ --- POSITION BIAS CHECK ---")
+        bias_test = await judge.check_position_bias(
+            question="Làm thế nào để đổi mật khẩu?",
+            response_a="Bạn vào Cài đặt > Bảo mật.",
+            response_b="Truy cập mục Cài đặt, sau đó chọn Bảo mật để đổi."
+        )
+        status = "❌ CÓ BIAS" if bias_test['has_position_bias'] else "✅ KHÔNG BIAS"
+        print(f"   Status: {status}")
+        print(f"   Order AB preferred: {bias_test['order_AB_preferred']}")
+        print(f"   Order BA preferred: {bias_test['order_BA_preferred']}")
         print()
 
         # ── Cost Report ──
