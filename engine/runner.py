@@ -17,11 +17,9 @@ class BenchmarkRunner:
         response = await self.agent.query(test_case["question"])
         latency = time.perf_counter() - start_time
         
-        # 2. Chạy Retrieval metrics (Hit Rate, MRR)
-        retrieval_scores = self.evaluator.score(test_case, response)
+        # 2. Chạy Evaluation
+        retrieval_metrics = self.evaluator.score(test_case, response)
         
-        # 3. Chạy Multi-Judge (Accuracy, Faithfulness)
-        # Nối tất cả context tìm được để Judge đối chiếu
         context_text = "\n\n".join(response.get("contexts", []))
         judge_result = await self.judge.evaluate_multi_judge(
             question=test_case["question"], 
@@ -30,20 +28,27 @@ class BenchmarkRunner:
             context=context_text
         )
         
+        # 3. Gom nhóm theo chuẩn Sample Submission (Tên key là 'ragas' cho cả Retrieval và Faithfulness)
         return {
             "test_case": test_case["question"],
-            "ground_truth": test_case["expected_answer"],
             "agent_response": response["answer"],
             "latency": latency,
-            "retrieval": retrieval_scores,
-            "judge": judge_result,
+            "ragas": {
+                "hit_rate": float(retrieval_metrics["hit_rate"]),
+                "mrr": float(retrieval_metrics["mrr"]),
+                "faithfulness": float(judge_result["faithfulness_avg"]),
+                "relevancy": float(judge_result["relevancy_avg"])
+            },
+            "judge": {
+                "final_score": judge_result["final_score"],
+                "agreement_rate": judge_result["agreement_rate"],
+                "individual_results": judge_result["individual_results"],
+                "status": judge_result["status"]
+            },
             "status": "fail" if judge_result["final_score"] <= 3 else "pass"
         }
 
     async def run_all(self, dataset: List[Dict], batch_size: int = 5) -> List[Dict]:
-        """
-        Chạy song song bằng asyncio.gather với giới hạn batch_size để không bị Rate Limit.
-        """
         results = []
         for i in range(0, len(dataset), batch_size):
             batch = dataset[i:i + batch_size]
