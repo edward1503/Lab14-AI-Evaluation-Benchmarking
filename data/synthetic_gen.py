@@ -2,6 +2,7 @@ import json
 import asyncio
 import os
 import random
+from pathlib import Path
 from collections import Counter
 from typing import List, Dict, Tuple
 from openai import AsyncOpenAI
@@ -261,6 +262,7 @@ class SyntheticDataGenerator:
                 {
                     "question": p["question"],
                     "expected_answer": p["expected_answer"],
+                    "expected_retrieval_ids": [chunk["id"]],
                     "context": chunk["text"],
                     "metadata": {
                         "difficulty": difficulty,
@@ -303,6 +305,7 @@ class SyntheticDataGenerator:
                 {
                     "question": p["question"],
                     "expected_answer": p["expected_answer"],
+                    "expected_retrieval_ids": [chunk["id"]] if case_type != "edge_out_of_context" else [],
                     "context": chunk["text"],
                     "metadata": {
                         "difficulty": "hard",
@@ -457,11 +460,41 @@ def _pick_one_per_doc(
     return picked
 
 
+def normalize_existing_dataset(existing_rows: List[Dict]) -> List[Dict]:
+    normalized = []
+    for row in existing_rows:
+        item = dict(row)
+        metadata = item.setdefault("metadata", {})
+        if "expected_retrieval_ids" not in item:
+            if metadata.get("type") == "edge_out_of_context":
+                item["expected_retrieval_ids"] = []
+            elif metadata.get("source_chunk_id"):
+                item["expected_retrieval_ids"] = [metadata["source_chunk_id"]]
+            else:
+                item["expected_retrieval_ids"] = []
+        normalized.append(item)
+    return normalized
+
+
 async def main():
     chunks_path = "data/chunks.json"
+    output_path = Path("data/golden_set.jsonl")
 
     if not os.path.exists(chunks_path):
         print(f"[!] Không tìm thấy {chunks_path}. Hãy chạy 'python agent/ingest.py' trước.")
+        return
+
+    if not os.getenv("OPENAI_API_KEY") and output_path.exists():
+        existing_rows = [
+            json.loads(line)
+            for line in output_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        normalized = normalize_existing_dataset(existing_rows)
+        with output_path.open("w", encoding="utf-8") as file_obj:
+            for row in normalized:
+                file_obj.write(json.dumps(row, ensure_ascii=False) + "\n")
+        print(f"[✓] Đã chuẩn hóa {len(normalized)} cases hiện có -> {output_path}")
         return
 
     with open(chunks_path, "r", encoding="utf-8") as f:
@@ -498,8 +531,7 @@ async def main():
     # ── Gộp và lưu ────────────────────────────────────────────────────────────
     all_pairs = qa_pairs + hard_cases
 
-    output_path = "data/golden_set.jsonl"
-    with open(output_path, "w", encoding="utf-8") as f:
+    with output_path.open("w", encoding="utf-8") as f:
         for pair in all_pairs:
             f.write(json.dumps(pair, ensure_ascii=False) + "\n")
 

@@ -467,7 +467,7 @@ class MainAgent:
             gen_tokens_in = 0
             gen_tokens_out = 0
         elif self.mock_mode:
-            raw_answer = self._mock_answer_v2(retrieved)
+            raw_answer = self._mock_answer_v2(question, retrieved)
             gen_tokens_in = 0
             gen_tokens_out = 0
         else:
@@ -639,17 +639,17 @@ class MainAgent:
         }
 
     def _mock_answer_v1(self, question: str, retrieved: list[dict[str, Any]]) -> str:
-        if not retrieved:
-            return f"[MOCK-V1] Dựa trên tài liệu: {question}"
-        first = retrieved[0]
-        return f"[MOCK-V1] Dựa trên {first['source']}: {str(first['text'])[:120]}..."
+        selected_lines, _, score = self._select_relevant_lines(question, retrieved, max_lines=1)
+        if not selected_lines or score < 0.08:
+            return "Không tìm thấy trong tài liệu."
+        return selected_lines[0]
 
-    def _mock_answer_v2(self, retrieved: list[dict[str, Any]]) -> str:
-        if not retrieved or max(float(item["score"]) for item in retrieved) < 0.1:
+    def _mock_answer_v2(self, question: str, retrieved: list[dict[str, Any]]) -> str:
+        selected_lines, cited_ids, score = self._select_relevant_lines(question, retrieved, max_lines=3)
+        if not selected_lines or score < 0.1:
             return f"{NOT_FOUND}\nNguồn: []"
-        first = retrieved[0]
-        retrieved_ids = ", ".join(str(item["chunk_id"]) for item in retrieved)
-        return f"[MOCK-V2] {str(first['text'])[:120]}...\nNguồn: [{retrieved_ids}]"
+        answer = " ".join(selected_lines)
+        return f"{answer}\nNguồn: [{', '.join(cited_ids)}]"
 
     def _mock_hypothetical_answer(self, question: str) -> str:
         normalized = question.lower()
@@ -660,6 +660,56 @@ class MainAgent:
         if "hỗ trợ" in normalized or "liên hệ" in normalized:
             return "Khách hàng liên hệ hỗ trợ qua email, chat hoặc tổng đài."
         return question
+
+    def _select_relevant_lines(
+        self,
+        question: str,
+        retrieved: list[dict[str, Any]],
+        max_lines: int = 2,
+    ) -> tuple[list[str], list[str], float]:
+        scored_lines: list[tuple[float, str, str]] = []
+        question_tokens = set(_tokenize(question))
+
+        for item in retrieved:
+            lines = [line.strip(" -") for line in str(item["text"]).splitlines() if line.strip()]
+            for line in lines:
+                if self._is_metadata_line(line):
+                    continue
+                line_tokens = set(_tokenize(line))
+                if not line_tokens:
+                    continue
+
+                overlap = len(question_tokens & line_tokens)
+                score = overlap / max(len(question_tokens), 1)
+                if re.search(r"\d", question) and re.search(r"\d", line):
+                    score += 0.2
+                if any(word in question.lower() for word in ["ai", "khi nào", "bao lâu", "bao nhiêu", "điều kiện", "quy trình"]):
+                    score += 0.08
+                if any(marker in question.lower() for marker in ["so sánh", "khác nhau", "điểm khác biệt"]):
+                    score += 0.05
+                scored_lines.append((score, line, str(item["chunk_id"])))
+
+        scored_lines.sort(key=lambda row: row[0], reverse=True)
+        selected_lines: list[str] = []
+        cited_ids: list[str] = []
+        best_score = scored_lines[0][0] if scored_lines else 0.0
+
+        for score, line, chunk_id in scored_lines:
+            if line in selected_lines:
+                continue
+            if score < 0.05 and selected_lines:
+                continue
+            selected_lines.append(line)
+            if chunk_id not in cited_ids:
+                cited_ids.append(chunk_id)
+            if len(selected_lines) >= max_lines:
+                break
+
+        return selected_lines, cited_ids, best_score
+
+    def _is_metadata_line(self, line: str) -> bool:
+        lower = line.lower()
+        return lower.startswith(("source:", "department:", "effective date:", "access:"))
 
     def _should_short_circuit_not_found(
         self,

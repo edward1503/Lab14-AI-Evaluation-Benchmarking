@@ -2,5 +2,7 @@
 __pycache__/
 *.pyc
 .DS_Store
-reports/
 .venv/
+data/index.pkl
+/summary.json
+/benchmark_results.json
