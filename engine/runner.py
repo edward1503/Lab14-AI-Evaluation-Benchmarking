@@ -1,7 +1,8 @@
 import asyncio
 import time
 from typing import List, Dict
-# Import other components...
+from engine.retrieval_eval import RetrievalEvaluator
+from engine.llm_judge import LLMJudge
 
 class BenchmarkRunner:
     def __init__(self, agent, evaluator, judge):
@@ -16,23 +17,27 @@ class BenchmarkRunner:
         response = await self.agent.query(test_case["question"])
         latency = time.perf_counter() - start_time
         
-        # 2. Chạy RAGAS metrics
-        ragas_scores = await self.evaluator.score(test_case, response)
+        # 2. Chạy Retrieval metrics (Hit Rate, MRR)
+        retrieval_scores = self.evaluator.score(test_case, response)
         
-        # 3. Chạy Multi-Judge
+        # 3. Chạy Multi-Judge (Accuracy, Faithfulness)
+        # Nối tất cả context tìm được để Judge đối chiếu
+        context_text = "\n\n".join(response.get("contexts", []))
         judge_result = await self.judge.evaluate_multi_judge(
-            test_case["question"], 
-            response["answer"], 
-            test_case["expected_answer"]
+            question=test_case["question"], 
+            answer=response["answer"], 
+            ground_truth=test_case["expected_answer"],
+            context=context_text
         )
         
         return {
             "test_case": test_case["question"],
+            "ground_truth": test_case["expected_answer"],
             "agent_response": response["answer"],
             "latency": latency,
-            "ragas": ragas_scores,
+            "retrieval": retrieval_scores,
             "judge": judge_result,
-            "status": "fail" if judge_result["final_score"] < 3 else "pass"
+            "status": "fail" if judge_result["final_score"] <= 3 else "pass"
         }
 
     async def run_all(self, dataset: List[Dict], batch_size: int = 5) -> List[Dict]:
